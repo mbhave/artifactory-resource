@@ -18,33 +18,26 @@ package io.spring.concourse.artifactoryresource.artifactory;
 
 import java.util.function.Function;
 
-import com.palantir.docker.compose.DockerComposeRule;
+import com.palantir.docker.compose.DockerComposeExtension;
 import com.palantir.docker.compose.connection.DockerPort;
 import com.palantir.docker.compose.connection.waiting.HealthChecks;
-import org.junit.rules.ExternalResource;
-import org.junit.rules.TestRule;
-import org.junit.runner.Description;
-import org.junit.runners.model.Statement;
+import org.junit.jupiter.api.extension.BeforeAllCallback;
+import org.junit.jupiter.api.extension.ExtensionContext;
 
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 /**
- * {@link TestRule} providing access to an artifactory server connection.
+ * providing access to an artifactory server connection.
  *
  * @author Phillip Webb
  * @author Madhura Bhave
  */
-public class ArtifactoryServerConnection implements TestRule {
+public class ArtifactoryServerConnection implements BeforeAllCallback {
 
 	private static final String SERVER_PROPERTY = "artifactoryServer";
 
 	private Function<Artifactory, ArtifactoryServer> serverFactory;
-
-	@Override
-	public Statement apply(Statement base, Description description) {
-		return apply(base, description, getDelegate());
-	}
 
 	private Delegate<?> getDelegate() {
 		String serverLocation = System.getProperty(SERVER_PROPERTY);
@@ -55,49 +48,43 @@ public class ArtifactoryServerConnection implements TestRule {
 
 	}
 
-	private <R extends TestRule> Statement apply(Statement base, Description description,
-			Delegate<R> delegate) {
-		final R rule = delegate.createRule();
-		Statement statement = new Statement() {
-
-			@Override
-			public void evaluate() throws Throwable {
-				ArtifactoryServerConnection.this.serverFactory = (artifactory) -> delegate
-						.getArtifactoryServer(rule, artifactory);
-				base.evaluate();
-			}
-
-		};
-		return rule.apply(statement, description);
-	}
-
 	public ArtifactoryServer getArtifactoryServer(Artifactory artifactory) {
 		Assert.state(this.serverFactory != null, "No artifactory server available");
 		return this.serverFactory.apply(artifactory);
 	}
 
-	private interface Delegate<R extends TestRule> {
+	@Override
+	public void beforeAll(ExtensionContext context) throws Exception {
+		before(context);
+	}
 
-		R createRule();
+	private <E extends BeforeAllCallback> void before(ExtensionContext context) throws Exception {
+		Delegate<E> delegate = (Delegate<E>) getDelegate();
+		E extension = delegate.createExtension();
+		extension.beforeAll(context);
+		this.serverFactory = (artifactory) -> (delegate).getArtifactoryServer(extension, artifactory);
+	}
 
-		ArtifactoryServer getArtifactoryServer(R rule, Artifactory artifactory);
+	private interface Delegate<E extends BeforeAllCallback> {
+
+		E createExtension();
+
+		ArtifactoryServer getArtifactoryServer(E rule, Artifactory artifactory);
 
 	}
 
-	private static class DockerDelegate implements Delegate<DockerComposeRule> {
+	private static class DockerDelegate implements Delegate<DockerComposeExtension> {
 
 		@Override
-		public DockerComposeRule createRule() {
-			return DockerComposeRule.builder()
-					.file("src/integration/resources/docker-compose.yml")
-					.waitingForService("artifactory", HealthChecks.toRespond2xxOverHttp(
-							8081, DockerDelegate::artifactoryHealthUri))
+		public DockerComposeExtension createExtension() {
+			return DockerComposeExtension.builder().file("src/integration/resources/docker-compose.yml")
+					.waitingForService("artifactory",
+							HealthChecks.toRespond2xxOverHttp(8081, DockerDelegate::artifactoryHealthUri))
 					.build();
 		}
 
 		@Override
-		public ArtifactoryServer getArtifactoryServer(DockerComposeRule rule,
-				Artifactory artifactory) {
+		public ArtifactoryServer getArtifactoryServer(DockerComposeExtension rule, Artifactory artifactory) {
 			DockerPort port = rule.containers().container("artifactory").port(8081);
 			return artifactory.server(artifactoryUri(port), "admin", "password");
 		}
@@ -112,7 +99,7 @@ public class ArtifactoryServerConnection implements TestRule {
 
 	}
 
-	private static class RunningServerDelegate implements Delegate<TestRule> {
+	private static class RunningServerDelegate implements Delegate<BeforeAllCallback> {
 
 		private final String uri;
 
@@ -121,15 +108,14 @@ public class ArtifactoryServerConnection implements TestRule {
 		}
 
 		@Override
-		public TestRule createRule() {
-			return new ExternalResource() {
+		public BeforeAllCallback createExtension() {
+			return (context) -> {
 
 			};
 		}
 
 		@Override
-		public ArtifactoryServer getArtifactoryServer(TestRule rule,
-				Artifactory artifactory) {
+		public ArtifactoryServer getArtifactoryServer(BeforeAllCallback rule, Artifactory artifactory) {
 			return artifactory.server(this.uri, "admin", "password");
 		}
 
